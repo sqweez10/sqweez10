@@ -19,6 +19,12 @@ Observed evidence: multiple UserOperation (`HandleOps`) bundles sweeping
 claimed TYSM to `chickenattack.base.eth`, consistent with an automated
 multi-wallet farming operation rather than organic community usage.
 
+**Important constraint:** `TYSMFaucetV2` has no native `pause()`
+function. It cannot be halted with a single owner call. Any plan to stop
+V2 activity at cutover has to work within the functions V2 actually has
+(`setCooldown`, `withdrawAll`, `setMilestoneRewards`, `setBaseReward`,
+`transferOwnership`) — see §11 "V2 Deprecation Options" below.
+
 **Goal for V3:** make unauthorized/automated multi-wallet farming
 impractical, without punishing existing genuine daily users any more than
 necessary.
@@ -131,7 +137,7 @@ unchanged.
 - `claimWithSignature` reverts when paused.
 - Use case: emergency stop if the signer key is suspected compromised, if
   a bug is found post-launch, or during the V2→V3 migration cutover
-  window to avoid double-claims across both contracts (see §7).
+  window to avoid double-claims across both contracts (see §11 and §12).
 
 ---
 
@@ -154,8 +160,9 @@ interface ITYSMFaucetV2 {
 ```
 
 V3 never writes to V2. V2 keeps operating exactly as it does today unless
-and until you decide separately to pause/deprecate it (a decision this
-document doesn't make — see §11).
+and until you decide separately to deprecate V2, stop refilling it, or
+disable practical claiming (a decision this document doesn't make — see
+§11).
 
 ### 6.2 Preserving totalDays and totalClaimed
 
@@ -193,13 +200,14 @@ That means:
 - Once fully migrated, all cooldown logic going forward uses V3's own
   `lastClaim`, updated normally on every V3 claim.
 
-This assumes the **cutover plan pauses V2 claiming** at (or shortly
-before) V3 launch — see §11 — so there's a clean, single source of truth
-for "when did this user last actually claim" at the moment of migration.
-If V2 is left claimable in parallel with V3 for any period, this
-guarantee breaks (a user could claim in both within the same day) — this
-is called out explicitly as a **launch dependency**, not something V3's
-contract logic alone can fully solve.
+This assumes the **cutover plan deprecates V2** — i.e. stops V2 refills
+and disables practical claiming (see §11, "V2 Deprecation Options") at
+(or shortly before) V3 launch — so there's a clean, single source of
+truth for "when did this user last actually claim" at the moment of
+migration. If V2 is left practically claimable in parallel with V3 for
+any period, this guarantee breaks (a user could claim in both within the
+same day) — this is called out explicitly as a **launch dependency**, not
+something V3's contract logic alone can fully solve.
 
 ### 6.4 Streak continuity
 
@@ -281,11 +289,11 @@ At a high level (no code written yet, per instructions):
 
 **Risks:**
 
-- Users who don't return before any V2 pause could feel like they "lost"
-  a claim window — needs clear advance communication.
-- If V2 isn't paused cleanly at cutover, the lazy-migration cooldown
-  logic in §6.3 can be gamed (claim in V2 right before cutover, then
-  again in V3 immediately after migrating).
+- Users who don't return before V2 is deprecated could feel like they
+  "lost" a claim window — needs clear advance communication.
+- If V2 isn't cleanly deprecated (in the sense of §11 below) at cutover,
+  the lazy-migration cooldown logic in §6.3 can be gamed (claim in V2
+  right before cutover, then again in V3 immediately after migrating).
 - Backend outage = no one can claim, even if the contract is healthy
   (this is a new single point of failure that V2 didn't have, and is the
   explicit tradeoff for anti-abuse capability — worth stating plainly to
@@ -312,25 +320,74 @@ earlier Farcaster/README drafts for this project):**
 
 ---
 
-## 11. Open sequencing question (not resolved by this document)
+## 11. V2 Deprecation Options
 
-This plan doesn't itself decide **when/whether to pause V2**. Two options
-worth discussing before implementation:
+`TYSMFaucetV2` was not built with a `pause()` function, so "pausing V2"
+isn't literally available. The realistic options, using only functions
+V2 actually has, are:
 
-- **Hard cutover:** pause V2 claiming at a fixed time, launch V3
-  immediately after, migrate lazily as users return. Cleanest cooldown
-  semantics (§6.3) but requires a coordinated announcement.
-- **Parallel period:** leave V2 open while V3 rolls out gradually.
-  Simpler rollout, but reopens the exact farming loophole V3 exists to
-  close, and complicates the migration cooldown guarantee. Not
-  recommended unless there's a strong reason to avoid a hard cutover.
+- **Stop refilling V2.** Simplest lever: once its TYSM balance runs out,
+  `claim()` calls start reverting on the `"Faucet empty!"` check
+  naturally. No owner action required beyond just not sending it more
+  tokens — but this only takes effect once the existing balance is fully
+  drained, which could take a while depending on current pool size.
+- **Withdraw remaining TYSM from V2, if appropriate**, via
+  `withdrawAll()` (owner-only). This makes V2 empty immediately rather
+  than waiting for organic drain, making it non-functional for claims
+  right away. Consider whether any legitimate users mid-cycle should be
+  given notice first.
+- **Increase V2's cooldown** via `setCooldown(uint256)` (owner-only) to
+  an impractically large value (e.g. years). This doesn't stop `claim()`
+  from being *callable*, but makes it practically useless — anyone who
+  has just claimed won't be able to claim again in any realistic
+  timeframe. This is the closest V2 gets to a "pause," without an actual
+  pause function.
+- **Announce V2 as deprecated/read-only** before the V3 cutover, so
+  users know to move to V3 and aren't caught off guard when claims stop
+  working or amounts go to zero.
 
-Recommendation: hard cutover, announced in advance, is the simpler and
-safer path — but this is ultimately your call as the project owner.
+Combining "stop refilling" + "increase cooldown drastically" + "announce
+deprecation" gives the closest practical equivalent to pausing V2,
+without needing to modify or redeploy the V2 contract itself.
+
+**Important:** V2's on-chain state (`userInfo` for every address) is
+**not affected** by any of the above and remains permanently readable.
+V3 will continue to read `userInfo(address)` from V2 for lazy migration
+(§6.1) regardless of which deprecation option(s) are used — deprecating
+V2's claim function doesn't erase or lock its historical data.
+
+> **Note:** V3 should not assume V2 is technically paused unless one of
+> the above actions is actually taken. Because `pause()` doesn't exist on
+> V2, doing nothing means V2 remains fully claimable indefinitely — the
+> farming loophole stays open in parallel with V3 unless one of these
+> deprecation steps is deliberately executed.
 
 ---
 
-## 12. Test plan (Base Sepolia)
+## 12. Open sequencing question (not resolved by this document)
+
+This plan doesn't itself decide exactly when/how to deprecate V2 (see
+§11 for the mechanics). Two sequencing options worth discussing before
+implementation:
+
+- **Hard cutover by stopping V2 refills and launching V3 as the only
+  actively funded faucet** — ideally paired with the cooldown-increase
+  and deprecation announcement from §11 so V2 becomes impractical to
+  claim from immediately, not just eventually. Launch V3 immediately
+  after. Cleanest cooldown semantics (§6.3) but requires a coordinated
+  announcement.
+- **Parallel period:** leave V2 funded and claimable while V3 rolls out
+  gradually. Simpler rollout, but reopens the exact farming loophole V3
+  exists to close, and complicates the migration cooldown guarantee. Not
+  recommended unless there's a strong reason to avoid a hard cutover.
+
+Recommendation: the hard cutover approach, announced in advance, is the
+simpler and safer path — but this is ultimately your call as the project
+owner.
+
+---
+
+## 13. Test plan (Base Sepolia)
 
 Before any mainnet deployment:
 
@@ -375,7 +432,7 @@ Before any mainnet deployment:
 
 ---
 
-## 13. Summary
+## 14. Summary
 
 V3's core change is simple to state even though the surrounding system
 isn't: **claiming requires a fresh, backend-issued, short-lived signature
