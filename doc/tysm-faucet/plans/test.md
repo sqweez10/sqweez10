@@ -62,7 +62,7 @@ Each authorization includes a `deadline` (e.g. issued time + 5–10 minutes). `c
 V3 keeps the exact same repeating 30-day schedule as V2 — this design is about **who** can claim, not **how much**:
 
 | Day Period | Daily Reward |
-| :--- | :--- |
+| --- | --- |
 | Days 1–6 | 2,000 TYSM / day |
 | Day 7 | 10,000 TYSM |
 | Days 8–14 | 2,000 TYSM / day |
@@ -106,6 +106,7 @@ interface ITYSMFaucetV2 {
         uint256 totalDays
     );
 }
+
 ```
 
 V3 never writes to V2. V2 keeps operating exactly as it does today unless and until you decide separately to deprecate V2 or stop V2 refills / disable practical claiming (a decision this document doesn't make — see §11).
@@ -115,6 +116,7 @@ V3 never writes to V2. V2 keeps operating exactly as it does today unless and un
 ### 6.2 Preserving totalDays and totalClaimed
 
 On first claim through V3, before paying out, the contract:
+
 * Checks if this address has already been "migrated" in V3 (`mapping(address => bool) public migrated`).
 * If not migrated: reads `(lastClaim, streak, totalClaimed, totalDays)` from V2, copies `totalDays` and `totalClaimed` into the user's V3 record as starting values, and sets `migrated[user] = true`.
 * Continues with the normal claim flow (signature check, cooldown, reward calculation, payout) using the now-initialized V3 record.
@@ -126,6 +128,7 @@ This is a lazy migration — no need for a bulk on-chain migration transaction t
 This is the trickiest part to get right, because a naive migration could either let a V2 user double-dip immediately (claim in V2, then instantly claim again in V3) or unfairly force someone who claimed in V2 yesterday to wait a full new 24h period in V3 on top of what they already waited.
 
 Recommended rule: on first migration, initialize the user's V3 `lastClaim` from their V2 `lastClaim`, not from `block.timestamp`. That means:
+
 * If a user claimed in V2 22 hours ago, migrating to V3 and immediately trying to claim will correctly still show ~2 hours of cooldown remaining (respecting the real elapsed time since their last claim anywhere).
 * Once fully migrated, all cooldown logic going forward uses V3's own `lastClaim`, updated normally on every V3 claim.
 
@@ -140,6 +143,7 @@ Similarly, streak should be copied from V2 on migration so a user mid-cycle (e.g
 ## 7. V2 Deprecation Options
 
 Because TYSMFaucetV2 lacks a native pausing implementation, the following strategies should be applied to deprecate V2 effectively:
+
 * **Stop refilling V2:** Allow existing contract funds to deplete completely.
 * **Withdraw remaining tokens:** Remove remaining TYSM liquidity directly from the V2 contract if appropriate.
 * **Increase V2 cooldown:** Utilize `setCooldown(uint256)` to set a prohibitively long cooldown period, which reduces or effectively stops new claims.
@@ -151,7 +155,7 @@ Because TYSMFaucetV2 lacks a native pausing implementation, the following strate
 ## 8. Admin functions
 
 | Function | Purpose |
-|---|---|
+| --- | --- |
 | `setSigner(address newSigner)` | Rotate the backend signing key |
 | `setBlocked(address user, bool isBlocked)` | Block/unblock a single wallet |
 | `setBlockedBatch(address[] users, bool isBlocked)` | Block/unblock many wallets in one tx |
@@ -166,6 +170,7 @@ All state-changing admin functions should emit events (`SignerUpdated`, `Blocked
 ## 9. Backend responsibilities
 
 The backend (serverless function issuing signatures) is where the actual anti-abuse intelligence lives. Responsibilities:
+
 * **Verify Farcaster FID / wallet association** — confirm the requesting wallet is genuinely linked to the Farcaster account claiming to own it (via the mini-app SDK context), not an arbitrary wallet spun up outside Farcaster entirely.
 * **Deny known farming wallets** — cross-check against an internal list (and/or heuristics: wallets created via the same bundler/paymaster in rapid succession, wallets whose only outbound activity is a sweep to a known collector address like `chickenattack.base.eth`).
 * **Issue a signature only to eligible users** — i.e. only after the above checks pass, and only for the user's own wallet address.
@@ -177,10 +182,13 @@ The backend (serverless function issuing signatures) is where the actual anti-ab
 ## 10. Frontend changes
 
 At a high level (no code written yet, per instructions):
+
 * Before showing an active "Claim" button, the frontend requests an authorization from the backend API, passing the connected wallet address and Farcaster context.
 * Backend responds with either:
-  * `{ signature, deadline, nonce }` → proceed to claim, or
-  * an error (not eligible, rate limited, blocked, etc.) → show the appropriate message instead of a claim button.
+* `{ signature, deadline, nonce }` → proceed to claim, or
+* an error (not eligible, rate limited, blocked, etc.) → show the appropriate message instead of a claim button.
+
+
 * Frontend calls the new `claimWithSignature(signature, deadline, nonce)` (exact signature shape TBD in implementation) instead of the old `claim()`.
 * Error handling needs to cover both backend-side rejections (shown before ever prompting a wallet transaction) and contract-side reverts (expired deadline, already used, blocked, paused, insufficient pool) — the latter should still be handled gracefully in case of a race condition (e.g. authorization expires between issuance and the user actually confirming the transaction).
 
@@ -189,12 +197,14 @@ At a high level (no code written yet, per instructions):
 ## 11. Migration risks & user communication
 
 ### Risks:
+
 * Users who don't return before any V2 stop refilling / deprecation could feel like they "lost" a claim window — needs clear advance communication.
 * If V2 isn't deprecated cleanly at cutover via the options in §7, the lazy-migration cooldown logic in §6.3 can be gamed (claim in V2 right before cutover, then again in V3 immediately after migrating).
 * **Backend outage = no one can claim**, even if the contract is healthy (this is a new single point of failure that V2 didn't have, and is the explicit tradeoff for anti-abuse capability — worth stating plainly to the community rather than glossing over it).
 * False positives in backend eligibility checks could block genuine long-time users — needs an appeal/manual-override path (e.g. owner can `setBlocked(user, false)` after manual review).
 
 ### Suggested communication approach:
+
 * Announce the anti-farming reason plainly and honestly (multi-wallet farming detected, tokens being drained to a specific address) — community members who've noticed the faucet's pool draining faster than expected will likely appreciate the transparency.
 * Give a specific cutover date/time, not "coming soon."
 * Reassure existing users explicitly: streak, `totalDays`, and `totalClaimed` carry over automatically the first time they claim on V3 — they don't need to do anything manually.
@@ -205,6 +215,7 @@ At a high level (no code written yet, per instructions):
 ## 12. Open sequencing question (not resolved by this document)
 
 This plan doesn't itself decide when/whether to stop V2 refills / disable practical claiming. Two options worth discussing before implementation:
+
 * **Hard cutover by stopping V2 refills and launching V3 as the only actively funded faucet:** Cleanest cooldown semantics (§6.3) but requires a coordinated announcement.
 * **Parallel period:** leave V2 open while V3 rolls out gradually. Simpler rollout, but reopens the exact farming loophole V3 exists to close, and complicates the migration cooldown guarantee. Not recommended unless there's a strong reason to avoid a hard cutover.
 
@@ -215,29 +226,44 @@ This plan doesn't itself decide when/whether to stop V2 refills / disable practi
 ## 13. Test plan (Base Sepolia)
 
 Before any mainnet deployment:
+
 * Deploy a mock V2 faucet on Sepolia exposing the same `userInfo()` shape as mainnet `TYSMFaucetV2` (same pattern already used for the Special Bonus Pool testing plan), pre-populated with a few synthetic users at different streak/totalDays states.
 * Deploy V3 pointed at the mock V2 and a test TYSM token.
 * **Signature validity tests:**
-  * Valid signature within deadline → claim succeeds.
-  * Expired deadline → reverts.
-  * Reused signature/nonce → reverts on second attempt.
-  * Signature for a different wallet than `msg.sender` → reverts.
-  * Signature from a non-signer key → reverts.
+* Valid signature within deadline → claim succeeds.
+* Expired deadline → reverts.
+* Reused signature/nonce → reverts on second attempt.
+* Signature for a different wallet than `msg.sender` → reverts.
+* Signature from a non-signer key → reverts.
+
+
 * **Blocklist tests:**
-  * Blocked address with an otherwise-valid signature → reverts.
-  * `setBlockedBatch` correctly blocks/unblocks multiple addresses in one call.
+* Blocked address with an otherwise-valid signature → reverts.
+* `setBlockedBatch` correctly blocks/unblocks multiple addresses in one call.
+
+
 * **Pause tests:**
-  * Claims revert while paused; succeed again after `unpause()`.
+* Claims revert while paused; succeed again after `unpause()`.
+
+
 * **Migration tests:**
-  * Fresh V3 user with existing V2 history: `totalDays`, `totalClaimed`, `streak`, and `lastClaim` all correctly copied on first V3 claim.
-  * Migrated user's cooldown correctly reflects time since their real V2 `lastClaim`, not `block.timestamp` at migration.
-  * A user with no V2 history at all (brand new) starts cleanly at Day 1 with no errors.
+* Fresh V3 user with existing V2 history: `totalDays`, `totalClaimed`, `streak`, and `lastClaim` all correctly copied on first V3 claim.
+* Migrated user's cooldown correctly reflects time since their real V2 `lastClaim`, not `block.timestamp` at migration.
+* A user with no V2 history at all (brand new) starts cleanly at Day 1 with no errors.
+
+
 * **Reward schedule tests:**
-  * Days 1–6, 7, 8–14, 15, 16–29, 30, and the Day 31 → Day 1 rollover all pay the correct amount, mirroring the existing V2 test coverage.
+* Days 1–6, 7, 8–14, 15, 16–29, 30, and the Day 31 → Day 1 rollover all pay the correct amount, mirroring the existing V2 test coverage.
+
+
 * **Admin function tests:**
-  * `setSigner`, `withdrawTokens`, `transferOwnership` all correctly restricted to `onlyOwner`.
+* `setSigner`, `withdrawTokens`, `transferOwnership` all correctly restricted to `onlyOwner`.
+
+
 * **Insufficient pool test:**
-  * Claim reverts cleanly (not a silent underpayment) when the V3 contract doesn't hold enough TYSM for the computed reward.
+* Claim reverts cleanly (not a silent underpayment) when the V3 contract doesn't hold enough TYSM for the computed reward.
+
+
 * **End-to-end dry run:** a small internal test with a real (test) backend issuing real signatures against Sepolia, exercising the full frontend → backend → contract path before considering mainnet.
 
 ---
