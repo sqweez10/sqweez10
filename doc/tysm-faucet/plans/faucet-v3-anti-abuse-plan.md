@@ -260,6 +260,31 @@ anti-abuse intelligence lives. Responsibilities:
    though it can't directly move tokens (it can only authorize claims
    within the contract's own rules).
 
+### Neynar User Quality Score
+
+- The backend may use **Neynar User Quality Score** as one anti-abuse
+  signal among several, when deciding whether to issue a claim
+  authorization.
+- This score should **not be the only eligibility rule**. It should be
+  combined with:
+  - verified Farcaster FID
+  - wallet/FID association
+  - blocklist / denylist
+  - known farming collector addresses
+  - repeated HandleOps or smart-wallet farming patterns
+  - rate limits per FID / wallet / IP / session
+  - account age and other quality signals where available
+- The backend should **not publicly disclose a fixed score threshold**,
+  because attackers may optimize around a known cutoff.
+- If a user is rejected due to risk checks, the frontend should show a
+  simple, non-judgmental message rather than exposing the specific
+  reason:
+  > "Claim eligibility could not be verified right now. Please try again
+  > later or contact support."
+- Neynar score should be treated as **a risk signal, not a final
+  judgment on the user** — it feeds into the overall decision alongside
+  the other checks above, rather than being a standalone pass/fail gate.
+
 ---
 
 ## 9. Frontend changes
