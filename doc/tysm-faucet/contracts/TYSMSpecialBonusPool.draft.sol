@@ -12,32 +12,31 @@ pragma solidity ^0.8.24;
  * @author  tops87
  * @notice  DRAFT. Not deployed, not tested, not audited.
  *
- * A standalone bonus reward contract for long-term TYSM Daily
- * Faucet users, built entirely separately from the existing
- * TYSMFaucetV2 contract:
- * - This contract makes NO write calls into TYSMFaucetV2.
- * - It only reads `userInfo(address).totalDays` from it.
- * - It cannot affect the daily faucet's streak, cooldown,
- * totalClaimed, or claim history in any way.
+ *          A standalone bonus reward contract for long-term TYSM Daily
+ *          Faucet users, built entirely separately from the existing
+ *          TYSMFaucetV2 contract:
+ *            - This contract makes NO write calls into TYSMFaucetV2.
+ *            - It only reads `userInfo(address).totalDays` from it.
+ *            - It cannot affect the daily faucet's streak, cooldown,
+ *              totalClaimed, or claim history in any way.
  *
- * The 0.0000038 ETH `SUPPORT_FEE` charged on each bonus claim is
- * a fixed, contract-level fee — the owner cannot increase it.
- * It is NOT Base network gas. Gas is paid to Base as normal on top
- * of this fee. The fee is held in this contract's ETH balance and
- * is only ever moved by the owner calling `withdrawFees()` to
- * `feeRecipient` (a bonus treasury), to help refill the TYSM bonus
- * pool over time.
+ *          The 0.0000038 ETH `supportFee` charged on each bonus claim is
+ *          a separate, contract-level fee — it is NOT Base network gas.
+ *          Gas is paid to Base as normal on top of this fee. The fee is
+ *          held in this contract's ETH balance and is only ever moved by
+ *          the owner calling `withdrawFees()` to `feeRecipient` (a bonus
+ *          treasury), to help refill the TYSM bonus pool over time.
  *
- * Each milestone (e.g. Day 45, Day 60) is a ONE-TIME claim per
- * wallet. A user does not need to claim milestones in order —
- * e.g. a user who reaches Day 60 without ever claiming Day 45
- * can still claim both, in any order, whenever they choose.
+ *          Each milestone (e.g. Day 45, Day 60) is a ONE-TIME claim per
+ *          wallet. A user does not need to claim milestones in order —
+ *          e.g. a user who reaches Day 60 without ever claiming Day 45
+ *          can still claim both, in any order, whenever they choose.
  *
  * Bonus amounts (see project docs for full multiplier rationale):
- * C2 (x1, active by default):  Day 45 = 80,000 TYSM   Day 60 = 180,000 TYSM
- * C3 (x2, pre-set, disabled):  Day 75 = 160,000 TYSM  Day 90 = 360,000 TYSM
- * C4 (x3, pre-set, disabled):  Day 105 = 240,000 TYSM Day 120 = 540,000 TYSM
- * * (multiplier caps at C4 / x3)
+ *   C2 (x1, active by default):  Day 45 = 80,000 TYSM   Day 60 = 180,000 TYSM
+ *   C3 (x2, pre-set, disabled):  Day 75 = 160,000 TYSM  Day 90 = 360,000 TYSM
+ *   C4 (x3, pre-set, disabled):  Day 105 = 240,000 TYSM Day 120 = 540,000 TYSM
+ *                                (multiplier caps at C4 / x3)
  */
 
 // =========================================================
@@ -74,9 +73,17 @@ contract TYSMSpecialBonusPool {
     address payable public feeRecipient;
 
     /// @notice Fixed ETH fee required per bonus claim, separate from
-    ///         normal Base network gas. The support fee is fixed by contract.
-    ///         The owner cannot increase it.
-    uint256 public constant SUPPORT_FEE = 0.0000038 ether;
+    ///         normal Base network gas. Owner-adjustable but capped by
+    ///         MAX_SUPPORT_FEE below so it can never be raised to
+    ///         something that harms users.
+    uint256 public supportFee;
+
+    /// @notice Hard ceiling on supportFee, enforced in setSupportFee().
+    ///         Set well above the default (0.0000038 ETH) to allow for
+    ///         reasonable future adjustment, while still making it
+    ///         impossible for the fee to become a meaningful barrier to
+    ///         claiming a bonus.
+    uint256 public constant MAX_SUPPORT_FEE = 0.0001 ether;
 
     bool public paused;
 
@@ -88,6 +95,11 @@ contract TYSMSpecialBonusPool {
 
     /// @dev user => milestoneDay => already claimed
     mapping(address => mapping(uint256 => bool)) public claimedBonus;
+
+    /// @notice Owner-controlled blocklist. Blocked addresses cannot claim
+    ///         bonuses regardless of eligibility, as a backstop against
+    ///         wallets identified as farming/abuse after the fact.
+    mapping(address => bool) public blocked;
 
     /// @dev Enumerable list of every milestone day ever configured, used
     ///      by getAvailableMilestones(). Expected to stay small (well
@@ -108,9 +120,11 @@ contract TYSMSpecialBonusPool {
     event BonusClaimed(address indexed user, uint256 indexed milestoneDay, uint256 amount, uint256 totalDays);
     event MilestoneEnabledUpdated(uint256 indexed milestoneDay, bool enabled);
     event BonusAmountUpdated(uint256 indexed milestoneDay, uint256 amount);
+    event SupportFeeUpdated(uint256 oldFee, uint256 newFee);
     event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
     event FeesWithdrawn(address indexed to, uint256 amount);
     event TokensWithdrawn(address indexed to, uint256 amount);
+    event BlockedStatusUpdated(address indexed user, bool isBlocked);
     event Paused();
     event Unpaused();
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
@@ -142,11 +156,11 @@ contract TYSMSpecialBonusPool {
 
     /**
      * @param _tysm          TYSM token address on Base
-     * (e.g. 0x0358795322c04de04ead2338a803a9d3518a9877)
+     *                       (e.g. 0x0358795322c04de04ead2338a803a9d3518a9877)
      * @param _faucet        Existing TYSMFaucetV2 address on Base
-     * (e.g. 0x43B68e86F6D6B3ED8d94c2A51015602c7338f124)
+     *                       (e.g. 0x43B68e86F6D6B3ED8d94c2A51015602c7338f124)
      * @param _feeRecipient  Address that receives withdrawn support fees
-     * (e.g. a bonus treasury / multisig)
+     *                       (e.g. a bonus treasury / multisig)
      */
     constructor(address _tysm, address _faucet, address payable _feeRecipient) {
         require(_tysm != address(0), "Zero token address");
@@ -157,6 +171,8 @@ contract TYSMSpecialBonusPool {
         faucet = ITYSMFaucetV2(_faucet);
         owner = msg.sender;
         feeRecipient = _feeRecipient;
+
+        supportFee = 0.0000038 ether;
 
         // Initial active phase (C2) — enabled by default.
         _setBonusAmount(45, 80_000 * 10 ** 18);
@@ -180,15 +196,16 @@ contract TYSMSpecialBonusPool {
 
     /**
      * @notice Claim a single bonus milestone. Always a separate
-     * transaction from the daily faucet's own claim() — this
-     * function never calls into TYSMFaucetV2 except for the
-     * read-only userInfo() eligibility check below.
+     *         transaction from the daily faucet's own claim() — this
+     *         function never calls into TYSMFaucetV2 except for the
+     *         read-only userInfo() eligibility check below.
      * @param milestoneDay The milestone day being claimed (e.g. 45, 60).
      */
     function claimBonus(uint256 milestoneDay) external payable nonReentrant whenNotPaused {
+        require(!blocked[msg.sender], "Blocked");
         require(milestoneEnabled[milestoneDay], "Milestone not enabled");
         require(!claimedBonus[msg.sender][milestoneDay], "Already claimed");
-        require(msg.value >= SUPPORT_FEE, "Insufficient support fee");
+        require(msg.value >= supportFee, "Insufficient support fee");
 
         // Read-only lookup of the user's lifetime totalDays from the
         // existing, untouched daily faucet contract.
@@ -208,10 +225,10 @@ contract TYSMSpecialBonusPool {
 
         emit BonusClaimed(msg.sender, milestoneDay, amount, totalDays);
 
-        // Note: any msg.value above SUPPORT_FEE is intentionally kept in
+        // Note: any msg.value above supportFee is intentionally kept in
         // the contract as extra bonus-pool support rather than refunded,
-        // to keep this function simple. The frontend should send exactly
-        // SUPPORT_FEE.
+        // to keep this function simple. The frontend should send the
+        // exact fee amount.
     }
 
     // =========================================================
@@ -220,10 +237,11 @@ contract TYSMSpecialBonusPool {
 
     /// @notice Best-effort eligibility check. Cannot verify msg.value
     ///         (only meaningful inside an actual transaction) — the
-    ///         frontend must still attach `SUPPORT_FEE` when calling
+    ///         frontend must still attach `supportFee` when calling
     ///         claimBonus().
     function canClaimBonus(address user, uint256 milestoneDay) external view returns (bool) {
         if (paused) return false;
+        if (blocked[user]) return false;
         if (!milestoneEnabled[milestoneDay]) return false;
         if (claimedBonus[user][milestoneDay]) return false;
 
@@ -247,6 +265,7 @@ contract TYSMSpecialBonusPool {
     ///         for, is enabled, funded, and has not yet claimed.
     function getAvailableMilestones(address user) external view returns (uint256[] memory) {
         (, , , uint256 totalDays) = faucet.userInfo(user);
+
         uint256 len = knownMilestoneDays.length;
         uint256 count = 0;
 
@@ -303,11 +322,34 @@ contract TYSMSpecialBonusPool {
         _setBonusAmount(milestoneDay, amount);
     }
 
+    function setSupportFee(uint256 newFee) external onlyOwner {
+        require(newFee <= MAX_SUPPORT_FEE, "Fee exceeds max cap");
+        uint256 old = supportFee;
+        supportFee = newFee;
+        emit SupportFeeUpdated(old, newFee);
+    }
+
     function setFeeRecipient(address payable newRecipient) external onlyOwner {
         require(newRecipient != address(0), "Zero address");
         address old = feeRecipient;
         feeRecipient = newRecipient;
         emit FeeRecipientUpdated(old, newRecipient);
+    }
+
+    /// @notice Block or unblock a single wallet from claiming bonuses.
+    function setBlocked(address user, bool isBlocked) external onlyOwner {
+        blocked[user] = isBlocked;
+        emit BlockedStatusUpdated(user, isBlocked);
+    }
+
+    /// @notice Block or unblock multiple wallets in a single transaction,
+    ///         e.g. to act quickly on a newly identified farming cluster.
+    function setBlockedBatch(address[] calldata users, bool isBlocked) external onlyOwner {
+        uint256 len = users.length;
+        for (uint256 i = 0; i < len; i++) {
+            blocked[users[i]] = isBlocked;
+            emit BlockedStatusUpdated(users[i], isBlocked);
+        }
     }
 
     function pause() external onlyOwner {
@@ -334,11 +376,8 @@ contract TYSMSpecialBonusPool {
     /// @notice Owner-controlled cleanup / rebalancing tool, e.g. to move
     ///         unused TYSM out before topping up, or in an emergency.
     ///         Does not affect any claimed status or user eligibility.
-    function withdrawUnusedTYSM(address to, uint256 amount) external onlyOwner nonReentrant {
+    function withdrawUnusedTYSM(address to, uint256 amount) external onlyOwner {
         require(to != address(0), "Zero address");
-        require(amount > 0, "Amount must be greater than zero");
-        require(tysm.balanceOf(address(this)) >= amount, "Insufficient TYSM balance");
-        
         require(tysm.transfer(to, amount), "Token transfer failed");
         emit TokensWithdrawn(to, amount);
     }
@@ -355,18 +394,11 @@ contract TYSMSpecialBonusPool {
     // =========================================================
 
     function _setMilestoneEnabled(uint256 milestoneDay, bool enabled) internal {
-        require(bonusAmountByMilestone[milestoneDay] > 0, "Milestone amount not set");
-        if (!_isKnownMilestone[milestoneDay]) {
-            _isKnownMilestone[milestoneDay] = true;
-            knownMilestoneDays.push(milestoneDay);
-        }
         milestoneEnabled[milestoneDay] = enabled;
         emit MilestoneEnabledUpdated(milestoneDay, enabled);
     }
 
     function _setBonusAmount(uint256 milestoneDay, uint256 amount) internal {
-        require(milestoneDay > 0, "Invalid milestone day");
-        require(amount > 0, "Amount must be greater than zero");
         if (!_isKnownMilestone[milestoneDay]) {
             _isKnownMilestone[milestoneDay] = true;
             knownMilestoneDays.push(milestoneDay);
@@ -376,13 +408,12 @@ contract TYSMSpecialBonusPool {
     }
 
     function _isAvailable(address user, uint256 day, uint256 totalDays) internal view returns (bool) {
-        if (paused) return false;
         return
+            !blocked[user] &&
             milestoneEnabled[day] &&
             !claimedBonus[user][day] &&
             bonusAmountByMilestone[day] > 0 &&
-            totalDays >= day &&
-            tysm.balanceOf(address(this)) >= bonusAmountByMilestone[day];
+            totalDays >= day;
     }
 
     // =========================================================
@@ -396,4 +427,3 @@ contract TYSMSpecialBonusPool {
         revert("Direct ETH not accepted, use claimBonus()");
     }
 }
-
