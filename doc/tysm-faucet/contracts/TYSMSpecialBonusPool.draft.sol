@@ -328,6 +328,7 @@ contract TYSMSpecialBonusPool {
 
     /// @notice Block or unblock a single wallet from claiming bonuses.
     function setBlocked(address user, bool isBlocked) external onlyOwner {
+        require(user != address(0), "Zero address");
         blocked[user] = isBlocked;
         emit BlockedStatusUpdated(user, isBlocked);
     }
@@ -337,6 +338,7 @@ contract TYSMSpecialBonusPool {
     function setBlockedBatch(address[] calldata users, bool isBlocked) external onlyOwner {
         uint256 len = users.length;
         for (uint256 i = 0; i < len; i++) {
+            require(users[i] != address(0), "Zero address");
             blocked[users[i]] = isBlocked;
             emit BlockedStatusUpdated(users[i], isBlocked);
         }
@@ -392,6 +394,8 @@ contract TYSMSpecialBonusPool {
     }
 
     function _setBonusAmount(uint256 milestoneDay, uint256 amount) internal {
+        require(milestoneDay > 0, "Invalid milestone day");
+        require(amount > 0, "Amount must be greater than zero");
         if (!_isKnownMilestone[milestoneDay]) {
             _isKnownMilestone[milestoneDay] = true;
             knownMilestoneDays.push(milestoneDay);
