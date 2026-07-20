@@ -2,8 +2,16 @@
 
 > DRAFT — NOT DEPLOYED — NOT AUDITED — FOR REVIEW ONLY
 
-Self-review of `TYSMFaucetV3.draft.sol`, `mocks/MockTYSM.sol`, and
-`mocks/MockFaucetV2.sol`, covering each area requested.
+Self-review of `TYSMFaucetV3.draft.sol` (Fresh Start design) and
+`mocks/MockTYSM.sol`, covering each area requested.
+
+**Design note:** V3 no longer migrates or reads from V2 in any way. It
+has no `oldFaucet` address, no `migrated` mapping, and no
+`UserMigrated` event. Every wallet's V3 `userInfo` starts at all-zero
+values, and a wallet's first successful `claimWithSignature` call is
+always its Day 1 in V3, regardless of any V2 history. V2's on-chain
+history remains untouched and readable directly on `TYSMFaucetV2`
+itself, but the V3 daily faucet contract has no dependency on it.
 
 ---
 
@@ -36,25 +44,58 @@ signature verification even happens. **No issue found.**
 
 ## ✅ Cooldown enforcement
 
-Enforced via `info.lastClaim + COOLDOWN`, evaluated **after** the lazy
-migration step, so a freshly-migrated wallet is checked against its real
-historical `lastClaim` (from V2 if just migrated), not a reset-to-zero
-value. **No issue found**, assuming the migration cutover itself happens
-cleanly (see the "Depends on" note below).
+Cooldown uses **only V3's own `lastClaim`** for the calling wallet —
+there is no other source it could read from, since V2 is never
+consulted. Specifically:
 
-## ✅ Lazy migration from V2
+- A brand new wallet has `lastClaim == 0`, so
+  `block.timestamp >= lastClaim + COOLDOWN` is trivially true — a new
+  user can claim their Day 1 reward immediately, as long as the backend
+  has issued them a valid authorization (share verification, denylist,
+  rate limiting, etc. all happen backend-side before that signature is
+  ever issued — see `faucet-v3-anti-abuse-plan.md` §8 and
+  `backend/claim-authorization-notes.md`).
+- After that first claim, `lastClaim` is set to `block.timestamp`, and
+  every subsequent claim is correctly gated by the full 24h `COOLDOWN`.
 
-Runs once per wallet, copies all four V2 fields, sets `migrated[user] =
-true`, and only then proceeds to the cooldown/streak/reward logic using
-the freshly-copied data. Matches the design in
-`faucet-v3-anti-abuse-plan.md` §6. **No issue found.**
+**No issue found.**
+
+## ✅ Fresh start behavior
+
+- Every wallet's `userInfo` (`lastClaim`, `streak`, `totalClaimed`,
+  `totalDays`) starts at all-zero values — there is no migration path,
+  no V2 lookup, and no way for a wallet to enter V3 with any non-zero
+  starting state.
+- A wallet's first successful `claimWithSignature` call sets
+  `streak = 1`, `totalDays = 1`, and pays `totalClaimed = 2,000 TYSM`
+  (the Day 1 base reward), exactly as any other "streak reset to 1"
+  claim would.
+- No V2 state is read or copied anywhere in the contract — confirmed by
+  the absence of any external call to a V2-shaped interface in
+  `claimWithSignature` or any view function.
+- **Security benefit worth calling out explicitly:** this design
+  eliminates an entire class of risk that the old migration-based
+  design had to manage carefully — there is no possibility of
+  accidentally carrying over farming-inflated `totalDays`/`streak`
+  values, or of a migration-timing edge case (V2/V3 claimed in the same
+  window) creating a double-claim opportunity. Fresh Start sidesteps
+  that risk entirely rather than mitigating it. **No issue found.**
 
 ## ✅ Reward schedule matching V2
 
-`calculateReward()` returns the same four values as V2
-(2,000 / 10,000 / 40,000 / 90,000 at the same streak positions), and the
-streak-reset-after-30 logic mirrors V2's `if (user.streak > 30) { streak
-= 1; }` exactly. **No issue found.**
+`calculateReward()` returns the same four values as V2:
+
+- 2,000 TYSM on a normal day
+- 10,000 TYSM on Day 7
+- 40,000 TYSM on Day 15
+- 90,000 TYSM on Day 30
+- Day 31 resets `streak` back to 1 (mirrors V2's
+  `if (user.streak > 30) { streak = 1; }` exactly), and the cycle
+  repeats from there
+- `totalDays` is never reset — it keeps incrementing forever, once per
+  successful claim, independent of the 30-day `streak` cycle
+
+**No issue found.**
 
 ## ✅ Blocklist
 
@@ -87,27 +128,25 @@ boolean-returning ERC20 — same assumption already used by V2 and the
 Bonus Pool draft, so it should hold, but worth reconfirming against the
 actual deployed token before mainnet.
 
-## ⚠️ Backend private key safety / frontend not exposing sensitive values
+## ⚠️ Backend private key safety
 
-Not verifiable from the contracts alone, since no backend or frontend
-code was generated in this task (per your instructions). The contract
-only ever sees the `signer` **address** (public, harmless) — the private
-key never touches this code. This remains a backend/frontend
-implementation responsibility to verify separately when those pieces are
-built, per §8 of `faucet-v3-anti-abuse-plan.md`.
+Not verifiable from the contract alone, since no backend code was
+generated in this task (per your instructions). The contract only ever
+sees the `signer` **address** (public, harmless) — the private key
+never touches this code. This remains a backend implementation
+responsibility to verify separately when that piece is built, per §8 of
+`faucet-v3-anti-abuse-plan.md`.
 
 ## ⚠️ Share verification is outside this contract
 
-`TYSMFaucetV3` does not and cannot verify that a user actually shared a
-Farcaster cast. The contract only verifies a backend-issued signature.
-
-Therefore, share verification must happen before the backend signs the
-claim authorization. The backend must not trust frontend `hasShared` or
-`localStorage`; it must independently verify a real, recent qualifying
-Farcaster cast via Neynar or another reliable Farcaster data source.
-
-If the backend signs without checking the share requirement, the
-contract will still allow the claim.
+Per the updated backend plan (`backend/claim-authorization-notes.md`),
+the requirement that a user actually posted a qualifying share cast
+before receiving a claim authorization is enforced entirely
+**backend-side**, before the signature is ever issued. The contract has
+no way to verify this itself and doesn't need to — it only ever sees the
+result (a valid signature or not). This is by design, not a gap in the
+contract, but worth stating plainly here since it's easy to assume
+"share verification" is a contract-level guarantee when it isn't.
 
 ---
 
@@ -125,10 +164,11 @@ real:
    verify by reading it, but hand-rolled signature-recovery code is
    exactly the kind of thing that should be swapped for a
    battle-tested implementation rather than trusted on inspection alone.
-2. **No automated tests exist yet.** `contract-checklist.md` defines
-   what to test, but actual Foundry/Hardhat test code still needs to be
-   written and run — per your instructions, I didn't generate backend
-   or test-runner files, only the contracts and mocks themselves.
+2. **Automated tests are still required.** `contract-checklist.md`
+   defines what to test, but actual Foundry/Hardhat test code still
+   needs to be written and run — per your instructions, I didn't
+   generate backend or test-runner files, only the contracts and mocks
+   themselves.
 3. **Nonce uniqueness is a backend responsibility, not a contract
    guarantee.** The contract only prevents reuse of an *identical*
    (sender, deadline, nonce) digest — it has no concept of sequential or
@@ -137,24 +177,31 @@ real:
 4. **`setBlockedBatch` has no array size cap.** Owner-only, so not an
    attack vector, but a very large batch could hit the block gas limit.
    Worth batching sensibly off-chain rather than sending huge arrays.
-5. **The view functions (`canClaim`, `getTimeLeft`, `nextReward`,
-   `userInfo`) all transitively depend on V2 remaining externally
-   readable** for any wallet that hasn't migrated yet. This matches the
-   plan (V2 state stays on-chain and readable even after deprecation),
-   but it's a live dependency worth keeping in mind — if V2 were ever
-   fully bricked/self-destructed (not currently planned), these views
-   would start reverting for unmigrated wallets.
-6. **On-chain rate limiting is intentionally absent** beyond the 24h
-   cooldown — rate limiting (per FID/wallet/IP/session) is meant to live
-   in the backend per the anti-abuse plan, not enforced here. Confirm
-   that's actually implemented before launch; the contract alone won't
-   stop a backend that's willing to issue unlimited authorizations.
-7. **Both mocks have intentionally unrestricted test-only functions**
-   (`MockTYSM.mint`, `MockFaucetV2.setUserInfo`) with no access control.
-   This is correct for their purpose, but flagging clearly: neither mock
-   should ever be mistaken for, or deployed alongside, the real
-   contracts — they exist purely for the test checklist above.
+5. **Backend rate limiting and share verification are required before
+   launch.** Both live entirely outside this contract (see the "Share
+   verification is outside this contract" note above), and neither has
+   been implemented yet — the contract's anti-abuse properties
+   (signature-gated claims, blocklist, pause) only work as intended if
+   the backend actually enforces eligibility before ever issuing a
+   signature. Confirm both are implemented and tested before real users
+   get access.
+6. **Mocks are test-only and must not be treated as real contracts.**
+   `MockTYSM.mint` has no access control by design — correct for its
+   purpose, but flagging clearly: it should never be mistaken for, or
+   deployed alongside, the real TYSM token. The same applies to
+   `MockFaucetV2` wherever it's still used (see the note below).
 
-None of the above required rewriting the contracts — they're the kind of
+None of the above required rewriting the contract — they're the kind of
 items that belong in an audit / pre-launch checklist rather than
 line-level fixes to what's already there.
+
+---
+
+## Note: MockFaucetV2 is no longer required for V3 daily faucet tests
+
+Since V3 no longer reads from V2 at all, `MockFaucetV2` is not needed
+for any `TYSMFaucetV3` test in `contract-checklist.md`. It may still be
+useful elsewhere — for example, testing the Special Bonus Pool, or a
+separate future loyalty/bonus review process that looks at V2 history —
+but that's decoupled from the V3 daily faucet contract covered in this
+review.
