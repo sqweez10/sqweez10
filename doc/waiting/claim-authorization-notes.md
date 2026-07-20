@@ -119,3 +119,8 @@ truth.
 - Neynar API credentials/config, rate-limit store choice, or denylist
   storage mechanism — all implementation details to be decided when
   backend code actually gets built.
+
+- [ ] Require `cast.author.fid` to exactly match the requesting `fid`.
+- [ ] Store used share cast hashes so one cast cannot unlock unlimited claims.
+- [ ] Consider adding a backend-issued share nonce/marker to the cast text.
+- [ ] Require the cast to include `#TYSMFaucet` plus the app URL or [@tops87sqweezz](https://farcaster.xyz/tops87sqweezz).base.eth.
