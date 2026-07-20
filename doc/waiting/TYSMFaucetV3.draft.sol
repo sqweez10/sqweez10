@@ -461,4 +461,8 @@ contract TYSMFaucetV3 {
     receive() external payable {
         revert("Direct ETH not accepted");
     }
+
+    fallback() external payable {
+        revert("Unsupported call");
+    }
 }
