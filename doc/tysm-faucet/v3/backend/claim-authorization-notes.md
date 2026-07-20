@@ -72,6 +72,9 @@ truth.
 1. User taps **Share** in the mini app.
 2. User publishes a Farcaster cast containing a required marker (e.g.
    `#TYSMFaucet`) and the app URL.
+
+   The share cast should include the required TYSM marker and project signal so the backend can verify it later.
+
 3. User returns to the app and taps **Claim**.
 4. Frontend calls `/api/claim-authorization` with `wallet` and `fid`.
 5. Backend runs the four checks above, including share verification.
@@ -92,6 +95,10 @@ truth.
 - [ ] **Require a text marker** in the cast — e.g. `#TYSMFaucet` or the
       app URL — so an unrelated cast from the same user doesn't
       accidentally satisfy the check.
+- [ ] **Require the cast author to match the requester** — `cast.author.fid` must exactly match the `fid` requesting the claim authorization. A cast from another user must never satisfy this check.
+- [ ] **Require the cast to include the TYSM marker plus a project signal** — for example `#TYSMFaucet` plus either the app URL or `[@tops87sqweezz](https://farcaster.xyz/tops87sqweezz).base.eth`, so unrelated casts do not pass accidentally.
+- [ ] **Store used share cast hashes** — track which cast hash has already been used to unlock a claim authorization, so the same cast cannot unlock unlimited future claims.
+- [ ] **Consider a backend-issued share nonce/marker** — optionally generate a short unique marker before the user shares, include it in the cast text, and verify that exact marker before signing. This ties a share to a specific claim attempt/window.
 - [ ] **Do not rely on `localStorage` or `hasShared`** as proof, at any
       point in this check. Those remain frontend-only UX conveniences,
       never a source of truth for the backend decision.
