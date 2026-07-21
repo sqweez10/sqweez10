@@ -45,7 +45,7 @@ User opens app
      recent share cast (see §7 and §8)
    → Backend signs an authorization (wallet, deadline, nonce) with a
      dedicated signer key
-   → Frontend calls claimWithSignature(signature, deadline, nonce)
+   → Frontend calls claimWithSignature(deadline, nonce, signature)
    → Contract verifies signature, deadline, nonce, blocklist, cooldown
    → Contract pays out and marks nonce used
 ```
@@ -110,8 +110,9 @@ used. In simple terms:
   never reads from V2, never writes to V2, and has no address pointing
   at V2 anywhere in it.
 - **This avoids carrying farming-inflated V2 history into the new
-  system.** A wallet that farmed V2 heavily gets no advantage on V3 and
-  no penalty either — it just starts like every other wallet, at Day 1.
+  system.** Any wallet with V2 history gets no advantage on V3 and no
+  automatic penalty either — it just starts like every other wallet, at
+  Day 1.
   This sidesteps an entire category of risk the old migration-based
   design would have had to manage carefully (e.g. a migration-timing
   edge case around cutover creating a double-claim opportunity — that
@@ -169,7 +170,7 @@ unchanged.
 - `bool public paused`, `pause()` / `unpause()` (owner only).
 - `claimWithSignature` reverts when paused.
 - Use case: emergency stop if the signer key is suspected compromised, if
-  a bug is found post-launch, or during the V2→V3 launch window (see §11
+  a bug is found post-launch, or during the V3 launch window (see §11
   and §12).
 
 ---
@@ -292,7 +293,7 @@ At a high level (no code written yet, per instructions):
    authorization from the backend API, passing the connected wallet
    address and Farcaster context.
 2. Backend responds with either:
-   - `{ signature, deadline, nonce }` → proceed to claim, or
+   - `{ deadline, nonce, signature }` → proceed to claim, or
    - an error (`not eligible`, `rate limited`, `blocked`, `share not
      found`, etc.) → show the appropriate friendly rejection message
      instead of a claim button (e.g. "Please share your TYSM streak
@@ -302,7 +303,7 @@ At a high level (no code written yet, per instructions):
    graying out the Claim button before the user has tapped Share), never
    as the actual eligibility source of truth. That determination always
    comes from the backend's real check against Farcaster.
-4. Frontend calls `claimWithSignature(signature, deadline, nonce)`
+4. Frontend calls `claimWithSignature(deadline, nonce, signature)`
    (exact signature shape TBD in implementation) instead of the old
    `claim()`.
 5. Error handling needs to cover both **backend-side** rejections (shown
@@ -389,13 +390,12 @@ without needing to modify or redeploy the V2 contract itself.
 
 **Important:** V2's on-chain state (`userInfo` for every address) is
 **not affected** by any of the above and remains permanently readable —
-useful if a future loyalty/bonus review (§3) wants to look at it, even
+useful if a future separate loyalty/bonus review wants to look at it, even
 though the V3 daily faucet itself never reads it.
 
-> **Note:** since V3 has no dependency on V2 being deprecated (unlike
-> the old migration-based design, where a clean cutover mattered for
-> cooldown correctness — see the removed §6.3 in the prior version of
-> this document), V2 deprecation timing is now purely about **stopping
+> **Note:** since V3 has no dependency on V2 being deprecated (unlike the
+> old migration-based design, where a clean cutover mattered for cooldown
+> correctness), V2 deprecation timing is now purely about **stopping
 > further draining of V2's pool and communicating clearly to users**, not
 > a technical prerequisite for V3 to function correctly.
 
@@ -466,6 +466,20 @@ Before any mainnet deployment:
     (test) backend issuing real signatures against Sepolia — including
     exercising the share-verification check — exercising the full
     frontend → backend → contract path before considering mainnet.
+11. **Direct ETH / fallback tests:**
+    - Plain ETH transfer (no calldata) reverts.
+    - A call with unknown calldata (no matching function) reverts.
+12. **View function tests:**
+    - `canClaim`, `getTimeLeft`, `nextReward`, `faucetBalance`,
+      `userInfo`, and `totalClaimsCount` all return expected values
+      across the states above (before any claim, after a claim, while
+      paused, while blocked).
+
+**Pre-mainnet signature helper warning:** before mainnet, replace the
+draft hand-written signature recovery (`_recoverSigner`) with
+OpenZeppelin's ECDSA/EIP-712 libraries, or complete an independent
+review of it. Hand-rolled signature-recovery code should not be trusted
+on inspection alone, however correct it looks.
 
 ---
 
@@ -480,6 +494,6 @@ by a contract-level blocklist and pause switch as backstops, while the
 Fresh Start approach itself removes an entire category of migration risk
 by design rather than mitigating it after the fact.
 
-This document is planning only. Next steps (not started): contract
-implementation, backend service implementation, frontend integration,
-and the Sepolia test plan above — in that order.
+This document is planning only. Next steps: review the draft contract,
+write automated tests, implement the backend service, integrate the
+frontend, and complete the Sepolia test plan — in that order.
