@@ -41,7 +41,8 @@ High-level flow:
 ```
 User opens app
    → Frontend calls backend API: "give me a claim authorization"
-   → Backend checks: FID/wallet legitimacy, blocklist, rate limits
+   → Backend checks: FID/wallet legitimacy, blocklist, rate limits,
+     recent share cast (see §7 and §8)
    → Backend signs an authorization (wallet, deadline, nonce) with a
      dedicated signer key
    → Frontend calls claimWithSignature(signature, deadline, nonce)
@@ -50,9 +51,9 @@ User opens app
 ```
 
 This shifts the actual anti-farming logic (FID checks, wallet clustering,
-rate limiting) to the backend, where it's flexible and can evolve without
-a redeploy — the contract's job is just to trust-but-verify a signature
-from a key the backend controls.
+rate limiting, share verification) to the backend, where it's flexible
+and can evolve without a redeploy — the contract's job is just to
+trust-but-verify a signature from a key the backend controls.
 
 ### 2.1 Signature contents
 
@@ -75,7 +76,7 @@ contract-side verification is standard and auditable.
   contract owner/multisig. If it's ever compromised, `setSigner()` lets
   the owner rotate it immediately without touching the token treasury or
   pausing the whole system unnecessarily (though pausing is also an
-  option — see §8).
+  option — see §5).
 
 ### 2.3 Deadline
 
@@ -96,10 +97,42 @@ authorizations.
 
 ---
 
-## 3. Reward schedule (unchanged from V2)
+## 3. Fresh Start V3
+
+**V3 is a clean restart for everyone.** This replaces the earlier plan
+of lazily migrating V2 history into V3 — that approach is no longer
+used. In simple terms:
+
+- Every wallet starts at **Day 1** the first time it makes a successful
+  claim on V3. It doesn't matter how much (or how little) history that
+  wallet has on V2.
+- **V3 does not use V2 history for daily faucet claims.** The contract
+  never reads from V2, never writes to V2, and has no address pointing
+  at V2 anywhere in it.
+- **This avoids carrying farming-inflated V2 history into the new
+  system.** A wallet that farmed V2 heavily gets no advantage on V3 and
+  no penalty either — it just starts like every other wallet, at Day 1.
+  This sidesteps an entire category of risk the old migration-based
+  design would have had to manage carefully (e.g. a migration-timing
+  edge case around cutover creating a double-claim opportunity — that
+  risk simply doesn't exist here).
+- **V2 history is not deleted.** It stays exactly where it is, on the V2
+  contract, permanently readable.
+- **V2 history may be used separately, later**, for a loyalty or bonus
+  review process — but that's a different, decoupled piece of work, not
+  part of the V3 daily faucet described in this document.
+- The **Special Bonus Pool** (`TYSMSpecialBonusPool`) is a separate
+  contract from the V3 daily faucet and isn't affected by any of this —
+  it has its own eligibility logic independent of what's described here.
+
+---
+
+## 4. Reward schedule
 
 V3 keeps the exact same repeating 30-day schedule as V2 — this design is
-about **who** can claim, not **how much**:
+about **who** can claim, not **how much**. The only difference from V2
+is that **every wallet starts this schedule from Day 1** on its first V3
+claim (see §3):
 
 | Day Period | Daily Reward |
 |---|---|
@@ -116,7 +149,7 @@ unchanged.
 
 ---
 
-## 4. Blocklist
+## 5. Blocklist
 
 - `mapping(address => bool) public blocked`.
 - `claimWithSignature` reverts immediately if `blocked[msg.sender]` is
@@ -131,93 +164,34 @@ unchanged.
 
 ---
 
-## 5. Pause / unpause
+## 6. Pause / unpause
 
 - `bool public paused`, `pause()` / `unpause()` (owner only).
 - `claimWithSignature` reverts when paused.
 - Use case: emergency stop if the signer key is suspected compromised, if
-  a bug is found post-launch, or during the V2→V3 migration cutover
-  window to avoid double-claims across both contracts (see §11 and §12).
+  a bug is found post-launch, or during the V2→V3 launch window (see §11
+  and §12).
 
 ---
 
-## 6. Migrating existing users from V2
+## 7. Cooldown behavior
 
-### 6.1 Reading V2 state
+Cooldown uses **only V3's own `lastClaim`** for the calling wallet —
+there's no other source it could use, since V2 is never consulted:
 
-V3 holds an immutable reference to the existing V2 contract and, on a
-user's **first V3 interaction**, reads their V2 history read-only:
-
-```solidity
-interface ITYSMFaucetV2 {
-    function userInfo(address user) external view returns (
-        uint256 lastClaim,
-        uint256 streak,
-        uint256 totalClaimed,
-        uint256 totalDays
-    );
-}
-```
-
-V3 never writes to V2. V2 keeps operating exactly as it does today unless
-and until you decide separately to deprecate V2, stop refilling it, or
-disable practical claiming (a decision this document doesn't make — see
-§11).
-
-### 6.2 Preserving totalDays and totalClaimed
-
-On first claim through V3, before paying out, the contract:
-
-1. Checks if this address has already been "migrated" in V3
-   (`mapping(address => bool) public migrated`).
-2. If not migrated: reads `(lastClaim, streak, totalClaimed, totalDays)`
-   from V2, copies `totalDays` and `totalClaimed` into the user's V3
-   record as **starting values**, and sets `migrated[user] = true`.
-3. Continues with the normal claim flow (signature check, cooldown,
-   reward calculation, payout) using the now-initialized V3 record.
-
-This is a **lazy migration** — no need for a bulk on-chain migration
-transaction touching every historical address. Users get their history
-carried over automatically the first time they claim via V3. A user who
-never returns simply never migrates, which is fine (V2 state is untouched
-either way).
-
-### 6.3 Cooldown behavior during migration
-
-This is the trickiest part to get right, because a naive migration could
-either let a V2 user double-dip immediately (claim in V2, then instantly
-claim again in V3) or unfairly force someone who claimed in V2 yesterday
-to wait a full new 24h period in V3 on top of what they already waited.
-
-**Recommended rule:** on first migration, initialize the user's V3
-`lastClaim` **from their V2 `lastClaim`**, not from `block.timestamp`.
-That means:
-
-- If a user claimed in V2 22 hours ago, migrating to V3 and immediately
-  trying to claim will correctly still show ~2 hours of cooldown
-  remaining (respecting the real elapsed time since their last claim
-  anywhere).
-- Once fully migrated, all cooldown logic going forward uses V3's own
-  `lastClaim`, updated normally on every V3 claim.
-
-This assumes the **cutover plan deprecates V2** — i.e. stops V2 refills
-and disables practical claiming (see §11, "V2 Deprecation Options") at
-(or shortly before) V3 launch — so there's a clean, single source of
-truth for "when did this user last actually claim" at the moment of
-migration. If V2 is left practically claimable in parallel with V3 for
-any period, this guarantee breaks (a user could claim in both within the
-same day) — this is called out explicitly as a **launch dependency**, not
-something V3's contract logic alone can fully solve.
-
-### 6.4 Streak continuity
-
-Similarly, `streak` should be copied from V2 on migration so a user
-mid-cycle (e.g. Day 12) doesn't lose their progress toward the Day 15/30
-milestones just because the contract changed underneath them.
+- A brand new wallet has `lastClaim == 0`, so the cooldown check is
+  trivially satisfied — a new user can claim their Day 1 reward
+  immediately, as long as the backend has issued them a valid
+  authorization (see §8 and §9 for what the backend checks first).
+- After that first claim, `lastClaim` is set to the claim's
+  `block.timestamp`, and every subsequent claim is gated by the normal
+  24-hour cooldown from there.
+- There is no V2 `lastClaim` involved at any point — nothing here reads
+  from or depends on V2's state.
 
 ---
 
-## 7. Admin functions
+## 8. Admin functions
 
 | Function | Purpose |
 |---|---|
@@ -235,7 +209,7 @@ mirroring the pattern already used in `TYSMSpecialBonusPool`.
 
 ---
 
-## 8. Backend responsibilities
+## 9. Backend responsibilities
 
 The backend (serverless function issuing signatures) is where the actual
 anti-abuse intelligence lives. Responsibilities:
@@ -244,21 +218,44 @@ anti-abuse intelligence lives. Responsibilities:
    wallet is genuinely linked to the Farcaster account claiming to own
    it (via the mini-app SDK context), not an arbitrary wallet spun up
    outside Farcaster entirely.
-2. **Deny known farming wallets** — cross-check against an internal list
+2. **Check the denylist** — cross-check against a known-bad list
    (and/or heuristics: wallets created via the same bundler/paymaster in
    rapid succession, wallets whose only outbound activity is a sweep to
    a known collector address like `chickenattack.base.eth`).
-3. **Issue a signature only to eligible users** — i.e. only after the
-   above checks pass, and only for the user's *own* wallet address.
-4. **Rate limit requests** — cap how many authorization requests a given
+3. **Rate limit requests** — cap how many authorization requests a given
    FID / IP / wallet can request per time window, independent of the
    on-chain cooldown, so the backend itself can't be hammered to fish for
    information or exhaust resources.
-5. **Never expose the signer private key** — key lives only in the
+4. **Verify a real, recent Farcaster share cast exists before signing**
+   — the backend must independently confirm (via Neynar) that the user
+   actually posted a qualifying share cast recently. Full detail on this
+   check lives in `backend/claim-authorization-notes.md`; the key point
+   for this plan is that it's a required check before any signature is
+   issued.
+5. **Never trust frontend `hasShared` or `localStorage`** as proof of
+   anything. Those are client-side UI conveniences only — trivially
+   bypassable — and must never be treated as the actual source of truth
+   for whether a share happened.
+6. **Generate a fresh, unpredictable nonce** for every authorization
+   issued — never reuse or predictably derive a nonce.
+7. **Issue a signature only to eligible users** — i.e. only after all of
+   the above checks pass, and only for the user's *own* wallet address.
+8. **Keep the signer private key backend-only** — it lives only in the
    serverless environment's secret store, never shipped to the client,
-   never logged. Treat it with the same care as a treasury key, even
-   though it can't directly move tokens (it can only authorize claims
-   within the contract's own rules).
+   never logged, and never reaches the frontend in any form. Treat it
+   with the same care as a treasury key, even though it can't directly
+   move tokens (it can only authorize claims within the contract's own
+   rules).
+
+### ⚠️ The contract cannot enforce any of this on its own
+
+**If the backend signs an authorization without doing these checks
+properly, the contract will allow the claim.** The contract's only job
+is to verify that a signature came from the currently-configured
+`signer` — it has no way to know, or check, whether the backend actually
+did its job first. All of V3's anti-abuse value depends on the backend
+enforcing eligibility correctly, every single time, before it ever signs
+anything.
 
 ### Neynar User Quality Score
 
@@ -287,7 +284,7 @@ anti-abuse intelligence lives. Responsibilities:
 
 ---
 
-## 9. Frontend changes
+## 10. Frontend changes
 
 At a high level (no code written yet, per instructions):
 
@@ -296,12 +293,19 @@ At a high level (no code written yet, per instructions):
    address and Farcaster context.
 2. Backend responds with either:
    - `{ signature, deadline, nonce }` → proceed to claim, or
-   - an error (`not eligible`, `rate limited`, `blocked`, etc.) → show
-     the appropriate message instead of a claim button.
-3. Frontend calls the new `claimWithSignature(signature, deadline, nonce)`
+   - an error (`not eligible`, `rate limited`, `blocked`, `share not
+     found`, etc.) → show the appropriate friendly rejection message
+     instead of a claim button (e.g. "Please share your TYSM streak
+     before claiming.").
+3. The frontend should **never treat its own `hasShared` state as
+   proof** that a share happened — it's only used for local UI/UX (e.g.
+   graying out the Claim button before the user has tapped Share), never
+   as the actual eligibility source of truth. That determination always
+   comes from the backend's real check against Farcaster.
+4. Frontend calls `claimWithSignature(signature, deadline, nonce)`
    (exact signature shape TBD in implementation) instead of the old
    `claim()`.
-4. Error handling needs to cover both **backend-side** rejections (shown
+5. Error handling needs to cover both **backend-side** rejections (shown
    before ever prompting a wallet transaction) and **contract-side**
    reverts (expired deadline, already used, blocked, paused, insufficient
    pool) — the latter should still be handled gracefully in case of a
@@ -310,15 +314,14 @@ At a high level (no code written yet, per instructions):
 
 ---
 
-## 10. Migration risks & user communication
+## 11. Fresh Start risks & user communication
 
 **Risks:**
 
-- Users who don't return before V2 is deprecated could feel like they
-  "lost" a claim window — needs clear advance communication.
-- If V2 isn't cleanly deprecated (in the sense of §11 below) at cutover,
-  the lazy-migration cooldown logic in §6.3 can be gamed (claim in V2
-  right before cutover, then again in V3 immediately after migrating).
+- Some real, genuine V2 users may feel like they **lost their
+  streak/history** when they see V3 start them back at Day 1 — this
+  needs clear, upfront communication rather than letting people discover
+  it on their own.
 - Backend outage = no one can claim, even if the contract is healthy
   (this is a new single point of failure that V2 didn't have, and is the
   explicit tradeoff for anti-abuse capability — worth stating plainly to
@@ -334,18 +337,27 @@ earlier Farcaster/README drafts for this project):**
   farming detected, tokens being drained to a specific address) —
   community members who've noticed the faucet's pool draining faster
   than expected will likely appreciate the transparency.
+- **Explain that V2 was effectively drained by the farming activity and
+  will not be refilled** — it isn't being taken away from honest users
+  arbitrarily; the pool itself is the casualty of the abuse described in
+  §1.
+- **Explain that V2's on-chain history remains readable and isn't
+  deleted**, and may be reviewed separately in the future for loyalty or
+  bonus consideration — even though it isn't used by the V3 daily faucet
+  itself.
+- **Explain why Fresh Start was chosen**: starting everyone at Day 1
+  avoids carrying any bot/farming-inflated history from V2 into the new
+  system, which is a simpler and more trustworthy foundation than trying
+  to sort "real" history from "farmed" history on a case-by-case basis.
 - Give a specific cutover date/time, not "coming soon."
-- Reassure existing users explicitly: streak, totalDays, and totalClaimed
-  carry over automatically the first time they claim on V3 — they don't
-  need to do anything manually.
-- Be upfront that a signature/eligibility check is now required to claim,
-  and that legitimate users won't notice much difference day-to-day
-  beyond a brief "checking eligibility" step before the claim button
-  activates.
+- Be upfront that a signature/eligibility check (including a share
+  requirement) is now required to claim, and that legitimate users won't
+  notice much difference day-to-day beyond a brief "checking eligibility"
+  step before the claim button activates.
 
 ---
 
-## 11. V2 Deprecation Options
+## 12. V2 Deprecation Options
 
 `TYSMFaucetV2` was not built with a `pause()` function, so "pausing V2"
 isn't literally available. The realistic options, using only functions
@@ -376,35 +388,34 @@ deprecation" gives the closest practical equivalent to pausing V2,
 without needing to modify or redeploy the V2 contract itself.
 
 **Important:** V2's on-chain state (`userInfo` for every address) is
-**not affected** by any of the above and remains permanently readable.
-V3 will continue to read `userInfo(address)` from V2 for lazy migration
-(§6.1) regardless of which deprecation option(s) are used — deprecating
-V2's claim function doesn't erase or lock its historical data.
+**not affected** by any of the above and remains permanently readable —
+useful if a future loyalty/bonus review (§3) wants to look at it, even
+though the V3 daily faucet itself never reads it.
 
-> **Note:** V3 should not assume V2 is technically paused unless one of
-> the above actions is actually taken. Because `pause()` doesn't exist on
-> V2, doing nothing means V2 remains fully claimable indefinitely — the
-> farming loophole stays open in parallel with V3 unless one of these
-> deprecation steps is deliberately executed.
+> **Note:** since V3 has no dependency on V2 being deprecated (unlike
+> the old migration-based design, where a clean cutover mattered for
+> cooldown correctness — see the removed §6.3 in the prior version of
+> this document), V2 deprecation timing is now purely about **stopping
+> further draining of V2's pool and communicating clearly to users**, not
+> a technical prerequisite for V3 to function correctly.
 
 ---
 
-## 12. Open sequencing question (not resolved by this document)
+## 13. Open sequencing question (not resolved by this document)
 
 This plan doesn't itself decide exactly when/how to deprecate V2 (see
-§11 for the mechanics). Two sequencing options worth discussing before
+§12 for the mechanics). Two sequencing options worth discussing before
 implementation:
 
 - **Hard cutover by stopping V2 refills and launching V3 as the only
   actively funded faucet** — ideally paired with the cooldown-increase
-  and deprecation announcement from §11 so V2 becomes impractical to
+  and deprecation announcement from §12 so V2 becomes impractical to
   claim from immediately, not just eventually. Launch V3 immediately
-  after. Cleanest cooldown semantics (§6.3) but requires a coordinated
-  announcement.
+  after.
 - **Parallel period:** leave V2 funded and claimable while V3 rolls out
   gradually. Simpler rollout, but reopens the exact farming loophole V3
-  exists to close, and complicates the migration cooldown guarantee. Not
-  recommended unless there's a strong reason to avoid a hard cutover.
+  exists to close. Not recommended unless there's a strong reason to
+  avoid a hard cutover.
 
 Recommendation: the hard cutover approach, announced in advance, is the
 simpler and safer path — but this is ultimately your call as the project
@@ -412,60 +423,62 @@ owner.
 
 ---
 
-## 13. Test plan (Base Sepolia)
+## 14. Test plan (Base Sepolia)
 
 Before any mainnet deployment:
 
-1. **Deploy a mock V2 faucet** on Sepolia exposing the same `userInfo()`
-   shape as mainnet `TYSMFaucetV2` (same pattern already used for the
-   Special Bonus Pool testing plan), pre-populated with a few synthetic
-   users at different streak/totalDays states.
-2. **Deploy V3** pointed at the mock V2 and a test TYSM token.
-3. **Signature validity tests:**
+1. **Deploy `MockTYSM` only** for V3 daily faucet tests. `MockFaucetV2`
+   is **not** used here — V3 has no dependency on it. (`MockFaucetV2`
+   may still be useful separately for Special Bonus Pool or future
+   loyalty/bonus review testing, but that's outside this test plan.)
+2. **Deploy V3** pointed at the test TYSM token, a test signer, and a
+   test owner.
+3. **Fresh Start behavior tests:**
+   - A brand new wallet's `userInfo` starts at all-zero values before
+     any claim.
+   - That wallet's first successful claim is Day 1 (`streak == 1`).
+   - That first claim pays exactly 2,000 TYSM.
+   - After the first claim, `totalDays == 1`.
+4. **Signature validity tests:**
    - Valid signature within deadline → claim succeeds.
    - Expired deadline → reverts.
    - Reused signature/nonce → reverts on second attempt.
    - Signature for a different wallet than `msg.sender` → reverts.
    - Signature from a non-`signer` key → reverts.
-4. **Blocklist tests:**
+5. **Blocklist tests:**
    - Blocked address with an otherwise-valid signature → reverts.
    - `setBlockedBatch` correctly blocks/unblocks multiple addresses in
      one call.
-5. **Pause tests:**
+6. **Pause tests:**
    - Claims revert while paused; succeed again after `unpause()`.
-6. **Migration tests:**
-   - Fresh V3 user with existing V2 history: `totalDays`,
-     `totalClaimed`, `streak`, and `lastClaim` all correctly copied on
-     first V3 claim.
-   - Migrated user's cooldown correctly reflects time since their real
-     V2 `lastClaim`, not `block.timestamp` at migration.
-   - A user with no V2 history at all (brand new) starts cleanly at
-     Day 1 with no errors.
 7. **Reward schedule tests:**
    - Days 1–6, 7, 8–14, 15, 16–29, 30, and the Day 31 → Day 1 rollover
      all pay the correct amount, mirroring the existing V2 test
      coverage.
+   - `totalDays` keeps increasing after Day 30 even as `streak` resets.
 8. **Admin function tests:**
    - `setSigner`, `withdrawTokens`, `transferOwnership` all correctly
      restricted to `onlyOwner`.
 9. **Insufficient pool test:**
    - Claim reverts cleanly (not a silent underpayment) when the V3
      contract doesn't hold enough TYSM for the computed reward.
-10. **End-to-end dry run:** a small internal test with a real (test)
-    backend issuing real signatures against Sepolia, exercising the full
+10. **Backend end-to-end dry run:** a small internal test with a real
+    (test) backend issuing real signatures against Sepolia — including
+    exercising the share-verification check — exercising the full
     frontend → backend → contract path before considering mainnet.
 
 ---
 
-## 14. Summary
+## 15. Summary
 
 V3's core change is simple to state even though the surrounding system
 isn't: **claiming requires a fresh, backend-issued, short-lived signature
-tied to a specific wallet**, backed by a contract-level blocklist and
-pause switch as backstops. The reward schedule, loyalty history, and
-day-to-day user experience stay as close to V2 as possible — the goal is
-closing the farming loophole with the least possible friction for
-genuine daily users.
+tied to a specific wallet, and V3 starts fresh for all users.** Every
+wallet begins at Day 1 on its first successful claim — V2 history
+remains on-chain but is not used by the V3 daily faucet. This is backed
+by a contract-level blocklist and pause switch as backstops, while the
+Fresh Start approach itself removes an entire category of migration risk
+by design rather than mitigating it after the fact.
 
 This document is planning only. Next steps (not started): contract
 implementation, backend service implementation, frontend integration,
