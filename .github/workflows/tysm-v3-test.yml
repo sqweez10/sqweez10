@@ -3,12 +3,12 @@ name: TYSM Faucet V3 Tests
 on:
   push:
     paths:
-      - "doc/tysm-faucet/v3/testing/**"
-      - ".github/workflows/tysm-v3-test.yml"
+      - 'doc/tysm-faucet/v3/testing/**'
+      - '.github/workflows/tysm-v3-test.yml'
   pull_request:
     paths:
-      - "doc/tysm-faucet/v3/testing/**"
-      - ".github/workflows/tysm-v3-test.yml"
+      - 'doc/tysm-faucet/v3/testing/**'
+      - '.github/workflows/tysm-v3-test.yml'
   workflow_dispatch:
 
 jobs:
@@ -20,11 +20,12 @@ jobs:
       run:
         working-directory: doc/tysm-faucet/v3/testing
 
-steps:
+    steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Check important files exist
+        shell: bash
         run: |
           test -f package.json
           test -f hardhat.config.ts
@@ -33,6 +34,7 @@ steps:
           test -f test/TYSMFaucetV3.test.ts
 
       - name: Print file line counts
+        shell: bash
         run: |
           wc -l package.json
           wc -l hardhat.config.ts
@@ -40,32 +42,34 @@ steps:
           wc -l contracts/MockTYSM.sol
           wc -l test/TYSMFaucetV3.test.ts
 
-- name: Check for wrongly named gitignore
+      - name: Check gitignore filename
+        shell: bash
         run: |
           if [ -f gitignore ]; then
-            echo "ERROR: Found file named 'gitignore'. Rename it to '.gitignore'."
+            echo 'ERROR Found file named gitignore. Rename it to .gitignore.'
             exit 1
           fi
-
-      - name: Check .gitignore exists
-        run: |
           test -f .gitignore
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: '9'
 
-- name: Install dependencies
+      - name: Install dependencies
+        shell: bash
         run: pnpm install
 
       - name: Compile contracts
+        shell: bash
         run: pnpm compile
 
       - name: Run tests
+        shell: bash
         run: pnpm test
+
