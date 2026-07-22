@@ -1,0 +1,48 @@
+name: TYSM Faucet V3 — Tests
+
+# DRAFT / TEST-ONLY WORKFLOW.
+# This workflow only installs dependencies and runs the local Hardhat
+# test suite under doc/tysm-faucet/v3/testing/. It does not deploy
+# anything, does not use any secrets, and does not touch any real
+# network. Safe to run on every push/PR.
+
+on:
+  push:
+    paths:
+      - "doc/tysm-faucet/v3/testing/**"
+  pull_request:
+    paths:
+      - "doc/tysm-faucet/v3/testing/**"
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    working-directory: doc/tysm-faucet/v3/testing
+
+jobs:
+  test:
+    name: Run Hardhat tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Compile contracts
+        run: pnpm run compile
+
+      - name: Run Hardhat tests
+        run: pnpm test
