@@ -58,12 +58,15 @@ pragma solidity ^0.8.24;
 //  INTERFACES
 // =========================================================
 
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
 }
 
-contract TYSMFaucetV3 {
+contract TYSMFaucetV3 is EIP712 {
     // =========================================================
     //  STATE
     // =========================================================
@@ -107,8 +110,6 @@ contract TYSMFaucetV3 {
     // =========================================================
     //  EIP-712
     // =========================================================
-
-    bytes32 public immutable DOMAIN_SEPARATOR;
 
     /// @dev keccak256("ClaimAuthorization(address user,uint256 deadline,bytes32 nonce)")
     bytes32 public constant CLAIM_TYPEHASH =
@@ -159,7 +160,11 @@ contract TYSMFaucetV3 {
      *                 corresponding public address.
      * @param _owner   Contract owner (e.g. a multisig).
      */
-    constructor(address _tysm, address _signer, address _owner) {
+    constructor(
+        address _tysm,
+        address _signer,
+        address _owner
+    ) EIP712("TYSMFaucetV3", "1") {
         require(_tysm != address(0), "Zero token address");
         require(_signer != address(0), "Zero signer address");
         require(_owner != address(0), "Zero owner address");
@@ -167,18 +172,6 @@ contract TYSMFaucetV3 {
         tysm = IERC20(_tysm);
         signer = _signer;
         owner = _owner;
-
-        DOMAIN_SEPARATOR = keccak256(
-            abi.encode(
-                keccak256(
-                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
-                ),
-                keccak256(bytes("TYSMFaucetV3")),
-                keccak256(bytes("1")),
-                block.chainid,
-                address(this)
-            )
-        );
     }
 
     // =========================================================
@@ -217,7 +210,7 @@ contract TYSMFaucetV3 {
 
         require(!usedAuthorizations[digest], "Authorization already used");
 
-        address recovered = _recoverSigner(digest, signature);
+        address recovered = ECDSA.recover(digest, signature);
         require(recovered == signer, "Invalid signer");
 
         // Mark used immediately after verification, before any further
@@ -375,36 +368,13 @@ contract TYSMFaucetV3 {
     //  EIP-712 / SIGNATURE HELPERS
     // =========================================================
 
-    function _hashTypedDataV4(bytes32 structHash) internal view returns (bytes32) {
-        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-    }
-
-    /// @dev Minimal ECDSA recovery with standard malleability protection
-    ///      (rejects upper-range `s` values) and `v` normalization check.
-    ///      NOTE: this is hand-rolled for a draft. Before any real
-    ///      deployment, replace with an audited implementation (e.g.
-    ///      OpenZeppelin's ECDSA library) — see the review notes.
-    function _recoverSigner(bytes32 digest, bytes memory signature) internal pure returns (address) {
-        require(signature.length == 65, "Invalid signature length");
-
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
-        assembly {
-            r := mload(add(signature, 0x20))
-            s := mload(add(signature, 0x40))
-            v := byte(0, mload(add(signature, 0x60)))
-        }
-
-        require(
-            uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
-            "Invalid signature 's' value"
-        );
-        require(v == 27 || v == 28, "Invalid signature 'v' value");
-
-        address recovered = ecrecover(digest, v, r, s);
-        require(recovered != address(0), "Invalid signature");
-        return recovered;
+    /// @notice Exposes the EIP-712 domain separator, computed by the
+    ///         inherited OpenZeppelin `EIP712` contract. Kept as a public
+    ///         wrapper (rather than relying on callers to know OZ's
+    ///         internal API) since existing tooling/tests expect a
+    ///         `DOMAIN_SEPARATOR()` view function.
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _domainSeparatorV4();
     }
 
     // =========================================================
