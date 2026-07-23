@@ -46,23 +46,18 @@ async function main() {
 
   const fundAmount = ethers.parseUnits("1000000", 18);
 
-  const mintTx = await mockTYSM.mint(deployer.address, fundAmount);
+  const mintTx = await mockTYSM.mint(faucetAddress, fundAmount);
   await mintTx.wait();
 
-  console.log("Minted MockTYSM to deployer:", fundAmount.toString());
-
-  const deployerBalance = await mockTYSM.balanceOf(deployer.address);
-
-  console.log("Deployer MockTYSM balance:", deployerBalance.toString());
-
-  const fundTx = await mockTYSM.transfer(faucetAddress, fundAmount);
-  await fundTx.wait();
-
-  console.log("Funded faucet with MockTYSM:", fundAmount.toString());
+  console.log("Minted MockTYSM directly to faucet:", fundAmount.toString());
 
   const faucetBalance = await mockTYSM.balanceOf(faucetAddress);
+  const deployerBalance = await mockTYSM.balanceOf(deployer.address);
   const contractSigner = await faucet.signer();
   const contractOwner = await faucet.owner();
+
+  console.log("Faucet MockTYSM balance:", faucetBalance.toString());
+  console.log("Deployer MockTYSM balance:", deployerBalance.toString());
 
   console.log("");
   console.log("Deployment summary:");
