@@ -46,6 +46,15 @@ async function main() {
 
   const fundAmount = ethers.parseUnits("1000000", 18);
 
+  const mintTx = await mockTYSM.mint(deployer.address, fundAmount);
+  await mintTx.wait();
+
+  console.log("Minted MockTYSM to deployer:", fundAmount.toString());
+
+  const deployerBalance = await mockTYSM.balanceOf(deployer.address);
+
+  console.log("Deployer MockTYSM balance:", deployerBalance.toString());
+
   const fundTx = await mockTYSM.transfer(faucetAddress, fundAmount);
   await fundTx.wait();
 
