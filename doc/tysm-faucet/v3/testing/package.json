@@ -5,7 +5,10 @@
   "description": "Draft Hardhat test suite for TYSMFaucetV3 (Fresh Start). Testing only — not for production or mainnet deployment. No mainnet network is configured, and no real private keys should ever be added to this project.",
   "scripts": {
     "compile": "hardhat compile",
-    "test": "hardhat test"
+    "test": "hardhat test",
+    "deploy:base-sepolia": "hardhat run scripts/deploy-base-sepolia.ts --network baseSepolia",
+    "claim:base-sepolia": "hardhat run scripts/claim-base-sepolia.ts --network baseSepolia",
+    "replay:base-sepolia": "hardhat run scripts/replay-base-sepolia.ts --network baseSepolia"
   },
   "dependencies": {
     "@openzeppelin/contracts": "5.0.2"
