@@ -404,6 +404,10 @@ contract TYSMFaucetV3 is EIP712 {
         uint256 newDay30Reward
     ) external onlyOwner {
         require(paused, "Must be paused to update reward schedule");
+        require(newBaseReward > 0, "Base reward is zero");
+        require(newDay7Reward > 0, "Day 7 reward is zero");
+        require(newDay15Reward > 0, "Day 15 reward is zero");
+        require(newDay30Reward > 0, "Day 30 reward is zero");
         require(newBaseReward <= MAX_REWARD, "Base reward exceeds max");
         require(newDay7Reward <= MAX_REWARD, "Day 7 reward exceeds max");
         require(newDay15Reward <= MAX_REWARD, "Day 15 reward exceeds max");
@@ -418,6 +422,7 @@ contract TYSMFaucetV3 is EIP712 {
     }
 
     function setClaimFeeWei(uint256 newClaimFeeWei) external onlyOwner {
+        require(paused, "Must be paused to update claim fee");
         require(newClaimFeeWei <= MAX_CLAIM_FEE_WEI, "Fee exceeds max");
         uint256 oldFee = claimFeeWei;
         claimFeeWei = newClaimFeeWei;
@@ -425,6 +430,7 @@ contract TYSMFaucetV3 is EIP712 {
     }
 
     function setFeeRecipient(address newFeeRecipient) external onlyOwner {
+        require(paused, "Must be paused to update fee recipient");
         require(newFeeRecipient != address(0), "Zero address");
         address oldRecipient = feeRecipient;
         feeRecipient = newFeeRecipient;
