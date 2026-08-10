@@ -80,6 +80,18 @@ contract TYSMFaucetV3 is EIP712 {
 
     uint256 public constant COOLDOWN = 24 hours;
 
+    // Adjustable reward schedule state
+    uint256 public constant MAX_REWARD = 100_000 * 10 ** 18;
+    uint256 public baseReward;
+    uint256 public day7Reward;
+    uint256 public day15Reward;
+    uint256 public day30Reward;
+
+    // Native claim fee state
+    uint256 public constant MAX_CLAIM_FEE_WEI = 10_000_000_000_000;
+    uint256 public claimFeeWei;
+    address public feeRecipient;
+
     struct UserInfo {
         uint256 lastClaim;
         uint256 streak;
@@ -126,6 +138,10 @@ contract TYSMFaucetV3 is EIP712 {
     event Unpaused();
     event TokensWithdrawn(address indexed to, uint256 amount);
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
+    event RewardScheduleUpdated(uint256 baseReward, uint256 day7Reward, uint256 day15Reward, uint256 day30Reward);
+    event ClaimFeeUpdated(uint256 oldClaimFeeWei, uint256 newClaimFeeWei);
+    event FeeRecipientUpdated(address indexed oldFeeRecipient, address indexed newFeeRecipient);
+    event ClaimFeeCollected(address indexed payer, address indexed recipient, uint256 amount);
 
     // =========================================================
     //  MODIFIERS
@@ -153,25 +169,35 @@ contract TYSMFaucetV3 is EIP712 {
     // =========================================================
 
     /**
-     * @param _tysm    TYSM token address on Base
-     *                 (e.g. 0x0358795322c04de04ead2338a803a9d3518a9877)
-     * @param _signer  Backend signing key that authorizes claims.
-     *                 NEVER a real private key here — this is just the
-     *                 corresponding public address.
-     * @param _owner   Contract owner (e.g. a multisig).
+     * @param _tysm         TYSM token address on Base
+     *                      (e.g. 0x0358795322c04de04ead2338a803a9d3518a9877)
+     * @param _signer       Backend signing key that authorizes claims.
+     *                      NEVER a real private key here — this is just the
+     *                      corresponding public address.
+     * @param _owner        Contract owner (e.g. a multisig).
+     * @param _feeRecipient Recipient address for native claim fees.
      */
     constructor(
         address _tysm,
         address _signer,
-        address _owner
+        address _owner,
+        address _feeRecipient
     ) EIP712("TYSMFaucetV3", "1") {
         require(_tysm != address(0), "Zero token address");
         require(_signer != address(0), "Zero signer address");
         require(_owner != address(0), "Zero owner address");
+        require(_feeRecipient != address(0), "Zero fee recipient address");
 
         tysm = IERC20(_tysm);
         signer = _signer;
         owner = _owner;
+        feeRecipient = _feeRecipient;
+        claimFeeWei = 3_000_000_000_000;
+
+        baseReward = 2_000 * 10 ** 18;
+        day7Reward = 10_000 * 10 ** 18;
+        day15Reward = 40_000 * 10 ** 18;
+        day30Reward = 90_000 * 10 ** 18;
     }
 
     // =========================================================
@@ -201,7 +227,8 @@ contract TYSMFaucetV3 is EIP712 {
         uint256 deadline,
         bytes32 nonce,
         bytes calldata signature
-    ) external nonReentrant whenNotPaused {
+    ) external payable nonReentrant whenNotPaused {
+        require(msg.value == claimFeeWei, "Incorrect fee");
         require(!blocked[msg.sender], "Blocked");
         require(block.timestamp <= deadline, "Signature expired");
 
@@ -240,20 +267,26 @@ contract TYSMFaucetV3 is EIP712 {
         info.totalDays += 1;
         totalClaimsCount += 1;
 
+        if (claimFeeWei > 0) {
+            (bool success, ) = payable(feeRecipient).call{value: msg.value}("");
+            require(success, "Fee transfer failed");
+            emit ClaimFeeCollected(msg.sender, feeRecipient, msg.value);
+        }
+
         require(tysm.transfer(msg.sender, reward), "Token transfer failed");
 
         emit ClaimedV3(msg.sender, reward, info.streak, info.totalDays);
     }
 
     // =========================================================
-    //  REWARD CALCULATOR (same schedule as V2)
+    //  REWARD CALCULATOR
     // =========================================================
 
-    function calculateReward(uint256 streak) public pure returns (uint256) {
-        if (streak == 30) return 90_000 * 10 ** 18;
-        if (streak == 15) return 40_000 * 10 ** 18;
-        if (streak == 7) return 10_000 * 10 ** 18;
-        return 2_000 * 10 ** 18;
+    function calculateReward(uint256 streak) public view returns (uint256) {
+        if (streak == 30) return day30Reward;
+        if (streak == 15) return day15Reward;
+        if (streak == 7) return day7Reward;
+        return baseReward;
     }
 
     // =========================================================
@@ -364,6 +397,46 @@ contract TYSMFaucetV3 is EIP712 {
         emit OwnershipTransferred(old, newOwner);
     }
 
+    function setRewardSchedule(
+        uint256 newBaseReward,
+        uint256 newDay7Reward,
+        uint256 newDay15Reward,
+        uint256 newDay30Reward
+    ) external onlyOwner {
+        require(paused, "Must be paused to update reward schedule");
+        require(newBaseReward > 0, "Base reward is zero");
+        require(newDay7Reward > 0, "Day 7 reward is zero");
+        require(newDay15Reward > 0, "Day 15 reward is zero");
+        require(newDay30Reward > 0, "Day 30 reward is zero");
+        require(newBaseReward <= MAX_REWARD, "Base reward exceeds max");
+        require(newDay7Reward <= MAX_REWARD, "Day 7 reward exceeds max");
+        require(newDay15Reward <= MAX_REWARD, "Day 15 reward exceeds max");
+        require(newDay30Reward <= MAX_REWARD, "Day 30 reward exceeds max");
+
+        baseReward = newBaseReward;
+        day7Reward = newDay7Reward;
+        day15Reward = newDay15Reward;
+        day30Reward = newDay30Reward;
+
+        emit RewardScheduleUpdated(newBaseReward, newDay7Reward, newDay15Reward, newDay30Reward);
+    }
+
+    function setClaimFeeWei(uint256 newClaimFeeWei) external onlyOwner {
+        require(paused, "Must be paused to update claim fee");
+        require(newClaimFeeWei <= MAX_CLAIM_FEE_WEI, "Fee exceeds max");
+        uint256 oldFee = claimFeeWei;
+        claimFeeWei = newClaimFeeWei;
+        emit ClaimFeeUpdated(oldFee, newClaimFeeWei);
+    }
+
+    function setFeeRecipient(address newFeeRecipient) external onlyOwner {
+        require(paused, "Must be paused to update fee recipient");
+        require(newFeeRecipient != address(0), "Zero address");
+        address oldRecipient = feeRecipient;
+        feeRecipient = newFeeRecipient;
+        emit FeeRecipientUpdated(oldRecipient, newFeeRecipient);
+    }
+
     // =========================================================
     //  EIP-712 / SIGNATURE HELPERS
     // =========================================================
@@ -381,8 +454,7 @@ contract TYSMFaucetV3 is EIP712 {
     //  FALLBACK
     // =========================================================
 
-    /// @dev claimWithSignature is nonpayable by design — this contract
-    ///      never expects or needs direct ETH.
+    /// @dev claimWithSignature is payable for collection of claimFeeWei.
     receive() external payable {
         revert("Direct ETH not accepted");
     }
