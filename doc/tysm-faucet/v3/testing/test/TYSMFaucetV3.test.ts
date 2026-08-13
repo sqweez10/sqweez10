@@ -85,12 +85,15 @@ async function claim(
     deadline,
     nonce
   );
-  return faucet.connect(userSigner).claimWithSignature(deadline, nonce, signature);
+  const claimFeeWei = await faucet.claimFeeWei();
+  return faucet
+    .connect(userSigner)
+    .claimWithSignature(deadline, nonce, signature, { value: claimFeeWei });
 }
 
 /** Deploys MockTYSM + TYSMFaucetV3, without funding the faucet. */
 async function deployCore() {
-  const [owner, userA, userB, other] = await ethers.getSigners();
+  const [owner, userA, userB, other, feeRecipient] = await ethers.getSigners();
 
   // Dedicated test-only signer wallet. Freshly generated every test run —
   // never a real private key.
@@ -104,7 +107,8 @@ async function deployCore() {
   const faucet = await TYSMFaucetV3.deploy(
     await tysm.getAddress(),
     signerWallet.address,
-    owner.address
+    owner.address,
+    feeRecipient.address
   );
   await faucet.waitForDeployment();
 
@@ -117,6 +121,7 @@ async function deployCore() {
     userA,
     userB,
     other,
+    feeRecipient,
     signerWallet,
     chainId: network.chainId,
   };
@@ -153,28 +158,39 @@ describe("TYSMFaucetV3 (Fresh Start)", function () {
     });
 
     it("reverts on a zero TYSM token address", async () => {
-      const [owner] = await ethers.getSigners();
+      const [owner, feeRecipient] = await ethers.getSigners();
       const signerWallet = ethers.Wallet.createRandom();
       const TYSMFaucetV3 = await ethers.getContractFactory("TYSMFaucetV3");
 
       await expect(
-        TYSMFaucetV3.deploy(ethers.ZeroAddress, signerWallet.address, owner.address)
+        TYSMFaucetV3.deploy(
+          ethers.ZeroAddress,
+          signerWallet.address,
+          owner.address,
+          feeRecipient.address
+        )
       ).to.be.revertedWith("Zero token address");
     });
 
     it("reverts on a zero signer address", async () => {
-      const [owner] = await ethers.getSigners();
+      const [owner, feeRecipient] = await ethers.getSigners();
       const MockTYSM = await ethers.getContractFactory("MockTYSM");
       const tysm = await MockTYSM.deploy();
       await tysm.waitForDeployment();
       const TYSMFaucetV3 = await ethers.getContractFactory("TYSMFaucetV3");
 
       await expect(
-        TYSMFaucetV3.deploy(await tysm.getAddress(), ethers.ZeroAddress, owner.address)
+        TYSMFaucetV3.deploy(
+          await tysm.getAddress(),
+          ethers.ZeroAddress,
+          owner.address,
+          feeRecipient.address
+        )
       ).to.be.revertedWith("Zero signer address");
     });
 
     it("reverts on a zero owner address", async () => {
+      const [, , , , feeRecipient] = await ethers.getSigners();
       const signerWallet = ethers.Wallet.createRandom();
       const MockTYSM = await ethers.getContractFactory("MockTYSM");
       const tysm = await MockTYSM.deploy();
@@ -182,9 +198,32 @@ describe("TYSMFaucetV3 (Fresh Start)", function () {
       const TYSMFaucetV3 = await ethers.getContractFactory("TYSMFaucetV3");
 
       await expect(
-        TYSMFaucetV3.deploy(await tysm.getAddress(), signerWallet.address, ethers.ZeroAddress)
+        TYSMFaucetV3.deploy(
+          await tysm.getAddress(),
+          signerWallet.address,
+          ethers.ZeroAddress,
+          feeRecipient.address
+        )
       ).to.be.revertedWith("Zero owner address");
     });
+
+      it("reverts on a zero fee recipient address", async () => {
+        const [owner] = await ethers.getSigners();
+        const signerWallet = ethers.Wallet.createRandom();
+        const MockTYSM = await ethers.getContractFactory("MockTYSM");
+        const tysm = await MockTYSM.deploy();
+        await tysm.waitForDeployment();
+        const TYSMFaucetV3 = await ethers.getContractFactory("TYSMFaucetV3");
+
+        await expect(
+          TYSMFaucetV3.deploy(
+            await tysm.getAddress(),
+            signerWallet.address,
+            owner.address,
+            ethers.ZeroAddress
+          )
+        ).to.be.revertedWith("Zero fee recipient address");
+      });
   });
 
   // =========================================================
@@ -252,8 +291,11 @@ describe("TYSMFaucetV3 (Fresh Start)", function () {
         nonce
       );
 
+      const claimFeeWei = await faucet.claimFeeWei();
       await expect(
-        faucet.connect(userA).claimWithSignature(expiredDeadline, nonce, signature)
+        faucet
+          .connect(userA)
+          .claimWithSignature(expiredDeadline, nonce, signature, { value: claimFeeWei })
       ).to.be.revertedWith("Signature expired");
     });
 
@@ -271,10 +313,15 @@ describe("TYSMFaucetV3 (Fresh Start)", function () {
         nonce
       );
 
-      await faucet.connect(userA).claimWithSignature(deadline, nonce, signature);
+      const claimFeeWei = await faucet.claimFeeWei();
+      await faucet
+        .connect(userA)
+        .claimWithSignature(deadline, nonce, signature, { value: claimFeeWei });
 
       await expect(
-        faucet.connect(userA).claimWithSignature(deadline, nonce, signature)
+        faucet
+          .connect(userA)
+          .claimWithSignature(deadline, nonce, signature, { value: claimFeeWei })
       ).to.be.revertedWith("Authorization already used");
     });
 
@@ -293,8 +340,11 @@ describe("TYSMFaucetV3 (Fresh Start)", function () {
         nonce
       );
 
+      const claimFeeWei = await faucet.claimFeeWei();
       await expect(
-        faucet.connect(userA).claimWithSignature(deadline, nonce, signature)
+        faucet
+          .connect(userA)
+          .claimWithSignature(deadline, nonce, signature, { value: claimFeeWei })
       ).to.be.revertedWith("Invalid signer");
     });
 
@@ -313,8 +363,11 @@ describe("TYSMFaucetV3 (Fresh Start)", function () {
         nonce
       );
 
+      const claimFeeWei = await faucet.claimFeeWei();
       await expect(
-        faucet.connect(userB).claimWithSignature(deadline, nonce, signature)
+        faucet
+          .connect(userB)
+          .claimWithSignature(deadline, nonce, signature, { value: claimFeeWei })
       ).to.be.revertedWith("Invalid signer");
     });
   });
@@ -659,4 +712,31 @@ describe("TYSMFaucetV3 (Fresh Start)", function () {
       ).to.be.revertedWith("Unsupported call");
     });
   });
+
+    // =========================================================
+    //  13. Claim fee
+    // =========================================================
+    describe("Claim fee", () => {
+      it("reverts on an underpayment", async () => {
+        const { faucet, userA } = await deployFixture();
+        const claimFeeWei = await faucet.claimFeeWei();
+
+        await expect(
+          faucet.connect(userA).claimWithSignature(0, ethers.ZeroHash, "0x", {
+            value: claimFeeWei - 1n,
+          })
+        ).to.be.revertedWith("Incorrect fee");
+      });
+
+      it("reverts on an overpayment", async () => {
+        const { faucet, userA } = await deployFixture();
+        const claimFeeWei = await faucet.claimFeeWei();
+
+        await expect(
+          faucet.connect(userA).claimWithSignature(0, ethers.ZeroHash, "0x", {
+            value: claimFeeWei + 1n,
+          })
+        ).to.be.revertedWith("Incorrect fee");
+      });
+    });
 });
