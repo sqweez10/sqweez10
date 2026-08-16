@@ -35,7 +35,8 @@ async function main() {
   const faucet = await TYSMFaucetV3.deploy(
     mockTYSMAddress,
     signerAddress,
-    ownerAddress
+    ownerAddress,
+    feeRecipientAddress
   );
 
   await faucet.waitForDeployment();
