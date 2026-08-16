@@ -8,7 +8,8 @@
     "test": "hardhat test",
     "deploy:base-sepolia": "hardhat run scripts/deploy-base-sepolia.ts --network baseSepolia",
     "claim:base-sepolia": "hardhat run scripts/claim-base-sepolia.ts --network baseSepolia",
-    "replay:base-sepolia": "hardhat run scripts/replay-base-sepolia.ts --network baseSepolia"
+    "replay:base-sepolia": "hardhat run scripts/replay-base-sepolia.ts --network baseSepolia",
+    "read:base-sepolia": "hardhat run scripts/read-balance-base-sepolia.ts --network baseSepolia"
   },
   "dependencies": {
     "@openzeppelin/contracts": "5.0.2"
