@@ -26,8 +26,12 @@ async function main() {
 
   const faucet = await ethers.getContractAt("TYSMFaucetV3", faucetAddress);
 
+  const claimFeeWei: bigint = await faucet.claimFeeWei();
+
   try {
-    const tx = await faucet.claimWithSignature(deadline, nonce, signature);
+    const tx = await faucet.claimWithSignature(deadline, nonce, signature, {
+      value: claimFeeWei,
+    });
     console.log("Unexpected replay tx sent:", tx.hash);
     await tx.wait();
     throw new Error("Replay unexpectedly succeeded");

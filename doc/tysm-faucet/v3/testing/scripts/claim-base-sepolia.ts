@@ -162,7 +162,10 @@ async function main() {
   console.log("Faucet MockTYSM:  ", faucetTokenBalanceBefore.toString());
   console.log("Claimer MockTYSM: ", beforeBalance.toString());
 
-  const tx = await faucet.claimWithSignature(deadline, nonce, signature);
+  const claimFeeWei: bigint = await faucet.claimFeeWei();
+  const tx = await faucet.claimWithSignature(deadline, nonce, signature, {
+    value: claimFeeWei,
+  });
 
   console.log("");
   console.log("Claim tx:", tx.hash);
