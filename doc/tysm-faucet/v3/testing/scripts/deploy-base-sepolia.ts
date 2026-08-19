@@ -13,10 +13,14 @@ function requireEnv(name: string): string {
 async function main() {
   const signerAddress = requireEnv("TYSM_V3_SEPOLIA_SIGNER_ADDRESS");
   const ownerAddress = requireEnv("TYSM_V3_SEPOLIA_OWNER_ADDRESS");
+  const feeRecipientAddress = requireEnv(
+    "TYSM_V3_SEPOLIA_FEE_RECIPIENT_ADDRESS"
+  );
 
   console.log("Deploying TYSM Faucet V3 Base Sepolia test contracts...");
   console.log("Signer:", signerAddress);
   console.log("Owner:", ownerAddress);
+  console.log("Fee recipient:", feeRecipientAddress);
 
   const [deployer] = await ethers.getSigners();
 
